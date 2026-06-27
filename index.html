@@ -141,17 +141,35 @@ body{
 .tag-group{margin-bottom:4px;}
 .tag-group-header{
   display:flex;align-items:center;gap:8px;
-  padding:10px 4px 8px;
+  padding:10px 6px 8px;cursor:pointer;
+  border-radius:10px;transition:background 0.15s;
+  user-select:none;-webkit-user-select:none;
 }
+.tag-group-header:active{background:var(--surface3);}
 .tag-group-dot{
   width:8px;height:8px;border-radius:50%;background:var(--accent);flex-shrink:0;
 }
-.tag-group-name{font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:0.6px;}
+.tag-group-name{font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:0.6px;flex:1;}
 .tag-group-count{font-size:11px;color:var(--text3);font-weight:600;}
+.tag-group-chevron{
+  color:var(--text3);font-size:13px;flex-shrink:0;
+  transition:transform 0.22s cubic-bezier(0.4,0,0.2,1);
+  display:flex;align-items:center;
+}
+.tag-group.collapsed .tag-group-chevron{transform:rotate(-90deg);}
 .tag-group-cards{
   background:var(--surface);border:1px solid var(--border);
   border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);
+  /* smooth collapse */
+  display:grid;grid-template-rows:1fr;
+  transition:grid-template-rows 0.25s cubic-bezier(0.4,0,0.2,1),
+             opacity 0.2s ease,border-color 0.2s;
+  opacity:1;
 }
+.tag-group.collapsed .tag-group-cards{
+  grid-template-rows:0fr;opacity:0;border-color:transparent;box-shadow:none;
+}
+.tag-group-cards-inner{overflow:hidden;min-height:0;}
 .tag-group-cards .card{
   border-radius:0;box-shadow:none;border:none;
   border-bottom:1px solid var(--border);
@@ -729,6 +747,7 @@ let viewMode  = 'group'; // 'group' | 'list'
 let editId    = null;
 let selectedCat = 'app';
 let formAttachments = [];
+let collapsedGroups = new Set(); // tag names currently collapsed
 
 // ── STORAGE: try IndexedDB for large storage, fallback to localStorage ──
 const DB_NAME='safevault_db', DB_VER=1, STORE='kv';
@@ -865,6 +884,32 @@ function renderCards(){
   }
 }
 
+function toggleGroup(key){
+  if(collapsedGroups.has(key)) collapsedGroups.delete(key);
+  else collapsedGroups.add(key);
+  // toggle class directly without full re-render
+  const el=document.querySelector(`.tag-group[data-group="${CSS.escape(key)}"]`);
+  if(el) el.classList.toggle('collapsed', collapsedGroups.has(key));
+}
+
+function tagGroupHtml(tag, items, col, showTagOnCards){
+  const isCollapsed=collapsedGroups.has(tag);
+  const chevron=`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+  return `<div class="tag-group${isCollapsed?' collapsed':''}" data-group="${esc(tag)}">
+    <div class="tag-group-header" onclick="toggleGroup('${esc(tag).replace(/'/g,"\\'")}')">
+      <div class="tag-group-dot" style="background:${col}"></div>
+      <div class="tag-group-name">${esc(tag)}</div>
+      <div class="tag-group-count">${items.length} item${items.length!==1?'s':''}</div>
+      <div class="tag-group-chevron">${chevron}</div>
+    </div>
+    <div class="tag-group-cards">
+      <div class="tag-group-cards-inner">
+        ${items.map(e=>cardHtml(e,showTagOnCards)).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderGrouped(list,el){
   // Separate tagged vs untagged
   const groups={};
@@ -879,31 +924,12 @@ function renderGrouped(list,el){
   let html='';
 
   tagKeys.forEach(tag=>{
-    const col=tagColor(tag);
-    html+=`<div class="tag-group">
-      <div class="tag-group-header">
-        <div class="tag-group-dot" style="background:${col}"></div>
-        <div class="tag-group-name">${esc(tag)}</div>
-        <div class="tag-group-count">${groups[tag].length} item${groups[tag].length!==1?'s':''}</div>
-      </div>
-      <div class="tag-group-cards">
-        ${groups[tag].map(e=>cardHtml(e,false)).join('')}
-      </div>
-    </div>`;
+    html+=tagGroupHtml(tag, groups[tag], tagColor(tag), false);
   });
 
   if(untagged.length){
     if(tagKeys.length>0){
-      html+=`<div class="tag-group">
-        <div class="tag-group-header">
-          <div class="tag-group-dot" style="background:var(--text3)"></div>
-          <div class="tag-group-name">Untagged</div>
-          <div class="tag-group-count">${untagged.length} item${untagged.length!==1?'s':''}</div>
-        </div>
-        <div class="tag-group-cards">
-          ${untagged.map(e=>cardHtml(e,false)).join('')}
-        </div>
-      </div>`;
+      html+=tagGroupHtml('Untagged', untagged, 'var(--text3)', false);
     } else {
       html+=untagged.map(e=>cardHtml(e,true)).join('');
     }
