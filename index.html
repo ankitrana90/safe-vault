@@ -493,6 +493,44 @@ body{
 .tag-manage-dot{width:10px;height:10px;border-radius:50%;background:var(--accent);flex-shrink:0;}
 .tag-manage-name{flex:1;font-size:15px;font-weight:500;}
 .tag-manage-count{font-size:12px;color:var(--text3);font-weight:600;}
+
+/* ── DRAG & DROP ── */
+.drag-handle{
+  display:flex;align-items:center;justify-content:center;
+  width:28px;height:32px;flex-shrink:0;cursor:grab;
+  color:var(--text3);opacity:0;transition:opacity 0.2s;
+  touch-action:none;user-select:none;-webkit-user-select:none;
+}
+.drag-handle svg{pointer-events:none;}
+.drag-handle:active{cursor:grabbing;}
+.card.drag-ready .drag-handle,
+.drag-ready .drag-handle{opacity:1;}
+.card.dragging{opacity:0.35;box-shadow:none!important;transform:none!important;}
+.tag-group.dragging{opacity:0.35;}
+.drag-ghost{
+  position:fixed;z-index:900;pointer-events:none;
+  border-radius:var(--radius);box-shadow:0 12px 40px rgba(0,0,0,0.25);
+  background:var(--surface);border:2px solid var(--accent);
+  transform:scale(1.04) rotate(-0.8deg);overflow:hidden;
+}
+.drop-line{
+  height:3px;border-radius:2px;background:var(--accent);
+  margin:2px 0;box-shadow:0 0 8px rgba(99,102,241,0.6);
+}
+.tag-group-drag{
+  display:flex;align-items:center;justify-content:center;
+  width:22px;height:100%;flex-shrink:0;cursor:grab;
+  color:var(--text3);touch-action:none;user-select:none;-webkit-user-select:none;
+}
+.tag-group-drag:active{cursor:grabbing;}
+.drag-hint{
+  position:fixed;bottom:96px;left:50%;transform:translateX(-50%);
+  background:var(--accent);color:#fff;font-size:12px;font-weight:700;
+  padding:7px 18px;border-radius:20px;z-index:800;
+  white-space:nowrap;box-shadow:0 4px 16px rgba(79,70,229,0.4);
+  opacity:0;transition:opacity 0.25s;pointer-events:none;
+}
+.drag-hint.show{opacity:1;}
 </style>
 </head>
 <body>
@@ -895,8 +933,11 @@ function toggleGroup(key){
 function tagGroupHtml(tag, items, col, showTagOnCards){
   const isCollapsed=collapsedGroups.has(tag);
   const chevron=`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+  const gripSvg=`<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>`;
+  const safeTag=tag.replace(/'/g,"\'");
   return `<div class="tag-group${isCollapsed?' collapsed':''}" data-group="${esc(tag)}">
-    <div class="tag-group-header" onclick="toggleGroup('${esc(tag).replace(/'/g,"\\'")}')">
+    <div class="tag-group-header" onclick="toggleGroup('${safeTag}')">
+      <div class="tag-group-drag" data-drag="group" data-group="${esc(tag)}" ontouchstart="onDragTouchStart(event,'group','${safeTag}')" onmousedown="onDragMouseStart(event,'group','${safeTag}')">${gripSvg}</div>
       <div class="tag-group-dot" style="background:${col}"></div>
       <div class="tag-group-name">${esc(tag)}</div>
       <div class="tag-group-count">${items.length} item${items.length!==1?'s':''}</div>
@@ -949,7 +990,9 @@ function cardHtml(e,showTag){
   const tagBadge=(showTag&&tag)?`<span class="card-tag-badge" style="background:${tagColor(tag)}18;color:${tagColor(tag)}">🏷 ${esc(tag)}</span>`:'';
   const attachBadge=hasAttach?`<span class="card-attach-badge">📎${e.attachments.length}</span>`:'';
   const meta=(tagBadge||attachBadge)?`<div class="card-meta">${tagBadge}${attachBadge}</div>`:'';
-  return `<div class="card" onclick="openDetail('${e.id}')">
+  const handleSvg=`<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>`;
+  return `<div class="card" data-id="${e.id}" onclick="cardClick(event,'${e.id}')">
+    <div class="drag-handle" data-drag="card" data-id="${e.id}" ontouchstart="onDragTouchStart(event,'card','${e.id}')" onmousedown="onDragMouseStart(event,'card','${e.id}')">${handleSvg}</div>
     ${iconHtml}
     <div class="card-body">
       <div class="card-title">${esc(e.name)}</div>
@@ -1076,8 +1119,32 @@ function shareEntry(id){
   const e=entries.find(x=>x.id===id); if(!e) return;
   const txt=Object.entries({Name:e.name,Tag:e.tag,User:e.user,Pass:e.pass,'Acc No':e.accno,'Doc No':e.docno,Expiry:e.expiry,URL:e.url,Notes:e.notes})
     .filter(([,v])=>v).map(([k,v])=>`${k}: ${v}`).join('\n');
-  if(navigator.share){navigator.share({title:e.name,text:txt}).catch(()=>{});}
-  else{navigator.clipboard.writeText(txt).then(()=>toast('Copied to clipboard'));}
+  // collect image attachments as File objects
+  const imgs=(e.attachments||[]).filter(a=>a.type==='image');
+  if(navigator.share && imgs.length){
+    // convert base64 dataURLs to File blobs, then share with files
+    Promise.all(imgs.map((a,i)=>{
+      const arr=a.data.split(','), mime=(arr[0].match(/:(.*?);/)||['','image/jpeg'])[1];
+      const bstr=atob(arr[1]); const u8=new Uint8Array(bstr.length);
+      for(let j=0;j<bstr.length;j++) u8[j]=bstr.charCodeAt(j);
+      const fname=(a.name||('image_'+i)).replace(/[^a-z0-9._-]/gi,'_');
+      return new File([u8], fname.endsWith('.jpg')||fname.endsWith('.jpeg')||fname.endsWith('.png')?fname:fname+'.jpg', {type:mime});
+    })).then(files=>{
+      // canShare check — files sharing may not be supported everywhere
+      if(navigator.canShare && navigator.canShare({files})){
+        navigator.share({title:e.name,text:txt,files}).catch(()=>{
+          // fallback: share without files
+          navigator.share({title:e.name,text:txt}).catch(()=>{});
+        });
+      } else {
+        navigator.share({title:e.name,text:txt}).catch(()=>{});
+      }
+    }).catch(()=>{navigator.share({title:e.name,text:txt}).catch(()=>{});});
+  } else if(navigator.share){
+    navigator.share({title:e.name,text:txt}).catch(()=>{});
+  } else {
+    navigator.clipboard.writeText(txt).then(()=>toast('Copied to clipboard'));
+  }
 }
 
 // ── LIGHTBOX ──
@@ -1386,6 +1453,297 @@ function dismissBanner(){
   const dismissed=localStorage.getItem('sv_banner_dismissed');
   if(isPWA||dismissed) document.getElementById('installBanner').style.display='none';
 })();
+
+
+// ── CARD CLICK (ignore if drag was triggered) ──
+let _didDrag=false;
+function cardClick(e,id){
+  if(_didDrag){_didDrag=false;return;}
+  openDetail(id);
+}
+
+// ── DRAG ENGINE ──
+// Supports: long-press on mobile (300ms hold), immediate mousedown on desktop (handle only)
+// Draggable items: tag-groups (reorder groups) and cards within a group (reorder entries in group)
+
+let _drag={
+  active:false, type:null, // 'card'|'group'
+  id:null,       // entry id or tag name
+  ghost:null,    // clone element
+  src:null,      // source DOM element
+  startY:0, startX:0,
+  lastY:0, indicator:null,
+  longPressTimer:null,
+};
+
+const DRAG_HINT=document.createElement('div');
+DRAG_HINT.className='drag-hint';
+DRAG_HINT.textContent='Long-press to drag • Release to drop';
+document.body.appendChild(DRAG_HINT);
+
+function showHint(){DRAG_HINT.classList.add('show');clearTimeout(DRAG_HINT._t);DRAG_HINT._t=setTimeout(()=>DRAG_HINT.classList.remove('show'),2000);}
+
+// ─ TOUCH START ─
+function onDragTouchStart(e,type,id){
+  e.stopPropagation();
+  const touch=e.touches[0];
+  _drag.startX=touch.clientX; _drag.startY=touch.clientY;
+  _drag.longPressTimer=setTimeout(()=>{
+    beginDrag(type,id,touch.clientX,touch.clientY);
+    showHint();
+    if(navigator.vibrate) navigator.vibrate(40);
+  },320);
+  document.addEventListener('touchmove',onDragTouchMove,{passive:false});
+  document.addEventListener('touchend',onDragTouchEnd,{once:true});
+}
+
+function onDragTouchMove(e){
+  const touch=e.touches[0];
+  // cancel long press if finger moved too much before timer fires
+  if(!_drag.active){
+    const dx=touch.clientX-_drag.startX, dy=touch.clientY-_drag.startY;
+    if(Math.sqrt(dx*dx+dy*dy)>8){clearTimeout(_drag.longPressTimer);}
+    return;
+  }
+  e.preventDefault();
+  moveDrag(touch.clientX,touch.clientY);
+}
+
+function onDragTouchEnd(e){
+  clearTimeout(_drag.longPressTimer);
+  document.removeEventListener('touchmove',onDragTouchMove);
+  if(!_drag.active) return;
+  endDrag();
+}
+
+// ─ MOUSE START (desktop — drag handle only) ─
+function onDragMouseStart(e,type,id){
+  if(e.button!==0) return;
+  e.preventDefault(); e.stopPropagation();
+  beginDrag(type,id,e.clientX,e.clientY);
+  document.addEventListener('mousemove',onDragMouseMove);
+  document.addEventListener('mouseup',onDragMouseEnd,{once:true});
+}
+function onDragMouseMove(e){
+  if(!_drag.active) return;
+  moveDrag(e.clientX,e.clientY);
+}
+function onDragMouseEnd(){
+  document.removeEventListener('mousemove',onDragMouseMove);
+  if(!_drag.active) return;
+  endDrag();
+}
+
+// ─ BEGIN DRAG ─
+function beginDrag(type,id,cx,cy){
+  _drag.active=true; _drag.type=type; _drag.id=id;
+  _didDrag=true;
+
+  const selector=type==='card'
+    ?`.card[data-id="${id}"]`
+    :`.tag-group[data-group="${CSS.escape(id)}"]`;
+  const src=document.querySelector(selector);
+  if(!src){_drag.active=false;return;}
+  _drag.src=src;
+
+  // add visual state
+  src.classList.add('dragging');
+  if(type==='card') src.classList.add('drag-ready');
+
+  // create ghost
+  const rect=src.getBoundingClientRect();
+  const ghost=document.createElement('div');
+  ghost.className='drag-ghost';
+  ghost.style.width=rect.width+'px';
+  ghost.style.left=rect.left+'px';
+  ghost.style.top=rect.top+'px';
+  // shallow visual clone
+  ghost.innerHTML=type==='card'
+    ?`<div style="padding:14px;display:flex;align-items:center;gap:12px;background:var(--surface);">${src.innerHTML}</div>`
+    :`<div style="padding:10px 14px;background:var(--surface);font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:0.6px;">${id}</div>`;
+  document.body.appendChild(ghost);
+  _drag.ghost=ghost;
+  _drag.lastY=cy;
+  _drag.offsetY=cy-rect.top;
+}
+
+// ─ MOVE DRAG ─
+function moveDrag(cx,cy){
+  if(!_drag.ghost) return;
+  const rect=_drag.src.getBoundingClientRect();
+  _drag.ghost.style.top=(cy-_drag.offsetY)+'px';
+  _drag.ghost.style.left=rect.left+'px';
+  _drag.lastY=cy;
+
+  removeDropIndicator();
+
+  if(_drag.type==='card'){
+    // find which card we're hovering over
+    const container=_drag.src.closest('.tag-group-cards-inner,.cards');
+    if(!container) return;
+    const cards=[...container.querySelectorAll('.card:not(.dragging)')];
+    let inserted=false;
+    for(const card of cards){
+      const r=card.getBoundingClientRect();
+      const mid=r.top+r.height/2;
+      if(cy<mid){
+        const line=makeDropLine();
+        container.insertBefore(line,card);
+        inserted=true; break;
+      }
+    }
+    if(!inserted&&cards.length){
+      const line=makeDropLine();
+      container.appendChild(line);
+    }
+  } else {
+    // group drag: find position in #cardList
+    const cardList=document.getElementById('cardList');
+    const groups=[...cardList.querySelectorAll('.tag-group:not(.dragging)')];
+    let inserted=false;
+    for(const grp of groups){
+      const r=grp.getBoundingClientRect();
+      const mid=r.top+r.height/2;
+      if(cy<mid){
+        const line=makeDropLine();
+        cardList.insertBefore(line,grp);
+        inserted=true; break;
+      }
+    }
+    if(!inserted&&groups.length){
+      const line=makeDropLine();
+      cardList.appendChild(line);
+    }
+  }
+}
+
+function makeDropLine(){
+  removeDropIndicator();
+  const line=document.createElement('div');
+  line.className='drop-line';
+  _drag.indicator=line;
+  return line;
+}
+function removeDropIndicator(){
+  if(_drag.indicator){_drag.indicator.remove();_drag.indicator=null;}
+}
+
+// ─ END DRAG ─
+function endDrag(){
+  if(!_drag.active) return;
+  _drag.active=false;
+
+  // remove ghost
+  if(_drag.ghost){_drag.ghost.remove();_drag.ghost=null;}
+  removeDropIndicator();
+  if(_drag.src) _drag.src.classList.remove('dragging','drag-ready');
+
+  const cy=_drag.lastY;
+
+  if(_drag.type==='card'){
+    // reorder within the entries array — respect group order
+    const src=_drag.src;
+    const container=src.closest('.tag-group-cards-inner,.cards');
+    if(container){
+      const cards=[...container.querySelectorAll('.card:not([data-id="'+_drag.id+'"])')];
+      // find insert position
+      let insertBefore=null;
+      for(const card of cards){
+        const r=card.getBoundingClientRect();
+        if(cy<r.top+r.height/2){insertBefore=card.dataset.id;break;}
+      }
+      reorderEntry(_drag.id, insertBefore, src.closest('.tag-group')?.dataset.group||null);
+    }
+  } else {
+    // reorder groups
+    const cardList=document.getElementById('cardList');
+    const groups=[...cardList.querySelectorAll('.tag-group:not([data-group="'+CSS.escape(_drag.id)+'"])')];
+    let insertBefore=null;
+    for(const grp of groups){
+      const r=grp.getBoundingClientRect();
+      if(cy<r.top+r.height/2){insertBefore=grp.dataset.group;break;}
+    }
+    reorderGroup(_drag.id, insertBefore);
+  }
+
+  _drag={active:false,type:null,id:null,ghost:null,src:null,startY:0,startX:0,lastY:0,indicator:null,longPressTimer:null};
+}
+
+// ─ REORDER HELPERS ─
+function reorderEntry(movingId, beforeId, groupTag){
+  // Build ordered list of ids for this group
+  const groupEntries=entries.filter(e=>(e.tag||'').trim()===(groupTag||''));
+  const otherEntries=entries.filter(e=>(e.tag||'').trim()!==(groupTag||''));
+
+  // move within group
+  const idx=groupEntries.findIndex(e=>e.id===movingId);
+  if(idx<0) return;
+  const [moved]=groupEntries.splice(idx,1);
+  if(beforeId){
+    const bi=groupEntries.findIndex(e=>e.id===beforeId);
+    if(bi>=0) groupEntries.splice(bi,0,moved);
+    else groupEntries.push(moved);
+  } else {
+    groupEntries.push(moved);
+  }
+
+  // reconstruct entries: preserve overall order of groups, just reorder within the group
+  // rebuild: for each entry in entries, replace group members in new order
+  const newGroupMap={};
+  groupEntries.forEach((e,i)=>{ newGroupMap[e.id]=i; });
+
+  // splice group entries back at their original positions
+  let gi=0;
+  const rebuilt=[];
+  for(const e of entries){
+    if((e.tag||'').trim()===(groupTag||'')){
+      rebuilt.push(groupEntries[gi++]);
+    } else {
+      rebuilt.push(e);
+    }
+  }
+  entries=rebuilt;
+  save();
+  renderCards();
+}
+
+function reorderGroup(movingTag, beforeTag){
+  // get tag order from current DOM (before we touched it)
+  const cardList=document.getElementById('cardList');
+  const domOrder=[...cardList.querySelectorAll('.tag-group')].map(g=>g.dataset.group);
+
+  // remove moving from order
+  const filtered=domOrder.filter(t=>t!==movingTag);
+  let insertIdx=filtered.length;
+  if(beforeTag){
+    const bi=filtered.indexOf(beforeTag);
+    if(bi>=0) insertIdx=bi;
+  }
+  filtered.splice(insertIdx,0,movingTag);
+
+  // reorder entries array to match this group order
+  const grouped={};
+  const untagged=[];
+  entries.forEach(e=>{
+    const t=(e.tag||'').trim();
+    if(t){ if(!grouped[t]) grouped[t]=[]; grouped[t].push(e); }
+    else untagged.push(e);
+  });
+
+  const reordered=[];
+  filtered.forEach(tag=>{
+    if(tag==='Untagged'){reordered.push(...untagged);}
+    else if(grouped[tag]){reordered.push(...grouped[tag]);}
+  });
+  // any tags not in filtered (shouldn't happen) go at end
+  entries.forEach(e=>{
+    if(!reordered.find(r=>r.id===e.id)) reordered.push(e);
+  });
+  entries=reordered;
+  save();
+  renderCards();
+}
+
 
 // ── INIT ──
 loadData();
